@@ -1,52 +1,69 @@
-name: Test NodeJs Project
-on: 
-  push:
-    branches:
-      - dev
+name: Deploy Frontend to AWS EC2
+
+on: workflow_dispatch
+  # push:
+  #   branches:
+  #     - main
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Get Code
-        uses : actions/checkout@v3
-      - name: Install NodeJs
-        uses: actions/setup-node@v3
-        with: 
-          node-version: 18
-      - name: Install dependencies    
-        run: npm ci 
-      - name: Run Tests
-        run: npm test  
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Get Code
-        uses : actions/checkout@v3
-      - name: Install dependencies    
-        run: npm ci 
-      - name: build website
-        run: npm run build
-      - name: upload artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist-files
-          path:  |
-            dist
-            package.json
   deploy:
-    needs: build
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+
     steps:
-      - name: Get Code
-        uses : actions/checkout@v3
-      - name: Install NodeJs
-        uses: actions/setup-node@v3
-        with: 
-          node-version: 18
-      - name: Install dependencies    
-        run: npm ci 
-      - name: Build Project
-        run: npm run build
-      - name: deploy
-        run: echo "Deployed"
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+
+          script: |
+            set -e
+
+            cd ~/Joms-Frontend
+
+            echo "Pulling latest code..."
+            git fetch origin
+            git reset --hard origin/main
+
+            echo "Creating env file..."
+            cat <<EOF > .env
+            ${{ secrets.ENV_FILE }}
+            EOF
+
+            echo "Building Docker image..."
+            docker build --no-cache -t joms-frontend-new .
+
+            echo "Stopping old container..."
+            docker stop joms-frontend || true
+            docker rm joms-frontend || true
+
+            echo "Starting new container..."
+
+            docker run -d \
+              --name joms-frontend \
+              -p 3000:80 \
+              --restart always \
+              joms-frontend-new
+
+            echo "Checking container..."
+
+            sleep 5
+
+            if ! docker ps | grep joms-frontend; then
+              echo "Container failed"
+              docker logs joms-frontend
+              exit 1
+            fi
+
+            echo "Testing frontend..."
+
+            curl -f http://localhost:3000
+
+            echo "Cleaning old images..."
+            docker image prune -f
+
+            echo "Deployment completed successfully"
